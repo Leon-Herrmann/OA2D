@@ -18,7 +18,7 @@ RESULTS = Path(__file__).parent / "results"
 # -------------------------------------- settings -------------------------------------
 # discretization
 PLY_VOXELS_2D = 128  # voxels across one ply of the off-axis model
-PLY_VOXELS = 38  # of the 3D model: 223M dofs, 28 GB of a 32 GB GPU (lower it for less)
+PLY_VOXELS = 50  # of the 3D model: 506M dofs, 27 GB of a 32 GB GPU (lower it for less)
 
 # geometry, mm: the laminate [0/theta]s loaded along x, a tunnel crack in its theta plies
 PLY = 0.1  # ply thickness
@@ -104,11 +104,13 @@ def middle_plies(y: cp.ndarray) -> cp.ndarray:
 def labels_of(n: cp.ndarray, y: cp.ndarray, void: cp.ndarray) -> cp.ndarray:
     """Label 0 the 0 plies, 1 the fibres, 2 the matrix, 3 void, at the points (n, y)."""
     fibre = cp.zeros(void.shape, bool)
+    n, y = n.astype(cp.float32), y.astype(cp.float32)  # the broadcast temporaries
     for cn, cy in centres:
         dn = (n - cn + PERIOD / 2) % PERIOD - PERIOD / 2
         fibre |= dn**2 + (y - cy) ** 2 < FIBRE_RADIUS**2
-    labels = cp.where(middle_plies(y), cp.where(fibre, 1, 2), 0)
-    return cp.where(void, 3, labels).astype(cp.uint8)
+    u8 = cp.uint8
+    labels = cp.where(middle_plies(y), cp.where(fibre, u8(1), u8(2)), u8(0))
+    return cp.where(void, u8(3), labels)
 
 
 def section_labels(d: Discretization, cracked: bool) -> cp.ndarray:
@@ -140,7 +142,7 @@ def farfield_displacement(nodes: tuple[int, ...], h: float) -> cp.ndarray:
 
 
 def solve(labels: cp.ndarray, h: float):
-    """The strain energy, the displacement u and the model of the voxel `labels` of edge `h`.
+    """The strain energy and the displacement u of the voxel `labels` of edge `h`.
 
     2D: the off-axis model, nothing varying along t, per unit length along z; u the
     fluctuation about the far field, which enters as the load of an eigenstrain. 3D: a
@@ -162,10 +164,10 @@ def solve(labels: cp.ndarray, h: float):
     )
 
     # 2D: the nodal loads of the far-field strain, -h B^T C e per voxel centre, and the
-    # far field's energy; 3D: the far-field displacement on the fixed dofs
-    load = cp.zeros(space.shape, cp.float32)
-    prescribed, farfield_energy = cp.zeros(space.shape, cp.float32), 0.0
+    # far field's energy; 3D: the far-field displacement on the fixed dofs, in place
+    load, prescribed, farfield_energy = None, None, 0.0
     if ndim == 2:
+        load = cp.zeros(space.shape, cp.float32)
         B = kind(materials[0]).kinematics(centre_gradients(2, 1))
         nx, ny = labels.shape
         for k, material in enumerate(materials):
@@ -178,21 +180,31 @@ def solve(labels: cp.ndarray, h: float):
             energy = 0.5 * float(farfield @ np.array(material.C) @ farfield)
             farfield_energy += energy * float(coefficient.sum()) * h**2
     else:
-        prescribed = farfield_displacement(space.nodes, h) * fixed
-    u, iterations = model.solve(load, prescribed=prescribed, rtol=ETA, maxiter=MAXITER)
+        prescribed = farfield_displacement(space.nodes, h)
+        prescribed *= fixed
+    del fixed
+    u, iterations = model.solve(
+        load, prescribed=prescribed, rtol=ETA, maxiter=MAXITER, out=prescribed
+    )
     print(f"  {ndim}D, {u.size} dofs, {iterations} iterations")
 
     # U = u^T A u / 2 - u . f + the far field's energy
-    return model.energy(u) - float(cp.vdot(u, load)) + farfield_energy, u, model
+    work = 0.0 if load is None else float(cp.vdot(u, load))
+    return model.energy(u) - work + farfield_energy, u
 
 
-def fields(u: cp.ndarray, model: Elasticity, labels: cp.ndarray) -> dict:
-    """The strain along the load per voxel, far field included, and the solid voxels."""
-    strain = model.gradient(u)[0, 0]  # du/dx, the same in the off-axis model
-    if labels.ndim == 2:  # the fluctuation's, plus the far field
+def fields(u: cp.ndarray, labels: cp.ndarray, h: float) -> dict:
+    """The strain along the load per voxel, far field included, and the solid voxels: du/dx at the voxel centres, the mean of the voxel's edges along x."""
+    ux, ndim = u[0], labels.ndim
+    strain = cp.zeros(labels.shape, cp.float32)
+    for corner in itertools.product((0, 1), repeat=ndim - 1):
+        edge = tuple(slice(o, o + n) for o, n in zip(corner, labels.shape[1:]))
+        strain += ux[(slice(1, None), *edge)] - ux[(slice(None, -1), *edge)]
+    strain /= 2 ** (ndim - 1) * h
+    if ndim == 2:  # the fluctuation's, plus the far field
         strain += farfield[0]
     solid = labels != 3
-    return {"strain": cp.where(solid, strain, 0), "solid": solid}
+    return {"strain": cp.where(solid, strain, cp.float32(0)), "solid": solid}
 
 
 def write(path: Path, u: cp.ndarray, cells: dict, h: float) -> None:
@@ -219,29 +231,33 @@ def write(path: Path, u: cp.ndarray, cells: dict, h: float) -> None:
 fine, coarse = discretization(PLY_VOXELS_2D), discretization(PLY_VOXELS)
 cp.cuda.Stream.null.synchronize()
 tic = time.time()
-intact, _, _ = solve(section_labels(fine, False), fine.h)
+intact = solve(section_labels(fine, False), fine.h)[0]
 labels2D = section_labels(fine, True)
-cracked, u2D, model2D = solve(labels2D, fine.h)
+cracked, u2D = solve(labels2D, fine.h)
 cp.cuda.Stream.null.synchronize()
 print(f"off-axis model {fine.section}: 2 solves in {time.time() - tic:.2f} s")
 G = (intact - cracked) / (2 * PLY / s)
 print(f"tunnel crack G {G:.4e} N/mm")
 RESULTS.mkdir(exist_ok=True)
-write(RESULTS / "tunnel_crack2D.vtk", u2D, fields(u2D, model2D, labels2D), fine.h)
-del u2D, model2D, labels2D
+write(RESULTS / "tunnel_crack2D.vtk", u2D, fields(u2D, labels2D, fine.h), fine.h)
+del u2D, labels2D
 
 # the off-axis model at the 3D model's voxels, for the comparison
-intact2D, _, _ = solve(section_labels(coarse, False), coarse.h)
-cracked2D, u2D, _ = solve(section_labels(coarse, True), coarse.h)
+intact2D = solve(section_labels(coarse, False), coarse.h)[0]
+cracked2D, u2D = solve(section_labels(coarse, True), coarse.h)
 G2D = (intact2D - cracked2D) / (2 * PLY / s)
 print(f"at the 3D model's voxels G {G2D:.4e} N/mm")
 
 # the 3D model, intact and cracked; the crack's area 2 PLY times its length WIDTH / sin
 cp.cuda.Stream.null.synchronize()
 tic = time.time()
-intact3D, _, _ = solve(box_labels(coarse, False), coarse.h)
+pool = cp.get_default_memory_pool()
+pool.free_all_blocks()  # the 2D models' blocks, before the largest allocations
+intact3D = solve(box_labels(coarse, False), coarse.h)[0]
+pool.free_all_blocks()  # the intact model's
 labels3D = box_labels(coarse, True)
-cracked3D, u3D, model3D = solve(labels3D, coarse.h)
+cracked3D, u3D = solve(labels3D, coarse.h)
+pool.free_all_blocks()  # the cracked model's
 cp.cuda.Stream.null.synchronize()
 print(f"3D model {coarse.box}: 2 solves in {time.time() - tic:.2f} s")
 G3D = (intact3D - cracked3D) / (2 * PLY * WIDTH / s)
@@ -253,6 +269,6 @@ print(f"3D: G {G3D:.4e} N/mm (the crack's ends at the faces z included), mid-dep
 print(f"displacement off the off-axis one by {float(gap):.2e} of its fluctuation")
 
 # ----------------------------------- postprocessing ----------------------------------
-write(RESULTS / "tunnel_crack3D.vtk", u3D, fields(u3D, model3D, labels3D), coarse.h)
+write(RESULTS / "tunnel_crack3D.vtk", u3D, fields(u3D, labels3D, coarse.h), coarse.h)
 
 assert abs(G / RECORDED - 1) < 1e-2, G

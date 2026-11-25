@@ -31,7 +31,7 @@ It writes `results/tunnel_crack2D.vtk` and `results/tunnel_crack3D.vtk` (the 3D 
 | model | voxels | degrees of freedom | G (N/mm) |
 |---|---|---|---|
 | off-axis, 128 voxels per ply | 3584 × 512 | 5.5M | 5.595e-4 |
-| off-axis, 38 voxels per ply | 1064 × 152 | 0.49M | 6.458e-4 |
-| 3D, 38 voxels per ply | 1590 × 152 × 304 | 223M | 7.294e-4 |
+| off-axis, 50 voxels per ply | 1400 × 200 | 0.84M | 6.156e-4 |
+| 3D, 50 voxels per ply | 2092 × 200 × 400 | 506M | 6.383e-4 |
 
-The 3D model exceeds the off-axis one at its resolution by 13 % and its section at mid-depth differs from the off-axis model's by 14 % of the displacement: the crack ends on the gripped faces of the block, and 38 voxels per ply resolve the inclined fibres coarsely (the difference in G was 20 % at 32 voxels per ply). The 3D model at its default needs about 28 GB, a 32 GB GPU; `PLY_VOXELS` lowers it (32: 133M degrees of freedom, within 16 GB). Its two solves take 58 s on an RTX 5090, kernel compilation included; the off-axis model's 1.6 s.
+The 3D model exceeds the off-axis one at its resolution by 3.7 % and its section at mid-depth differs from the off-axis model's by 15 % of the displacement: the crack ends on the gripped faces of the block, and the voxels resolve the inclined fibres more coarsely than the off-axis model's ellipses (the difference in G was 13 % at 38 voxels per ply, 20 % at 32). The 3D model at its default needs about 27 GB, a 32 GB GPU; `PLY_VOXELS` lowers it (40: 259M degrees of freedom, about 14 GB). On an RTX 5090 its two solves take 14 s, the off-axis model's 0.4 s.
