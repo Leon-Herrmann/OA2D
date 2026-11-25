@@ -2,7 +2,7 @@
 
 Tunnel cracks and delamination in laminates with the off-axis 2D element: three displacement components on a section of the laminate along the load, nothing varying along the crack, so an off-axis crack, a 3D problem, costs a 2D model.
 
-<img src="figures/tunnel_crack.png" width="900" alt="A laminate block with a 30 degree tunnel crack cut open at mid-depth, beside the off-axis 2D model of that section">
+<img src=".assets/tunnel_crack.png" width="900" alt="A laminate block with a 30 degree tunnel crack cut open at mid-depth, beside the off-axis 2D model of that section">
 
 *Left: a 3D model of a [0/30]s glass/epoxy laminate loaded along its length, a tunnel crack along the fibres of its 30° plies (fibres explicit), cut open at mid-depth (the cut-away parts translucent, the crack red). Right: the off-axis 2D model of that mid-depth section, its crack carried along the crack's direction. Strain along the load, displacements magnified 150 times. The 3D model has 506M degrees of freedom, two solves in 14 s on an RTX 5090; the off-axis model 5.5M, two solves in 0.4 s; both with [cuvox](cuvox/).*
 

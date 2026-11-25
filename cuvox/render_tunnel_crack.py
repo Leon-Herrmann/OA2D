@@ -223,6 +223,10 @@ save(v2D, right, size)
 figure = Image.new("RGBA", (WIDTH, WIDTH // 2), (0, 0, 0, 0))
 figure.paste(Image.open(left), (0, 0))
 figure.paste(Image.open(right), (WIDTH // 2, 0))
+# the empty rows above and below cut away, a small border kept
+top, bottom = figure.getbbox()[1::2]
+border = WIDTH // 100
+figure = figure.crop((0, max(0, top - border), WIDTH, min(WIDTH // 2, bottom + border)))
 figure.save(RESULTS / f"{NAME}.png", optimize=True)
 for v in (v3D, v2D):
     Delete(v)
